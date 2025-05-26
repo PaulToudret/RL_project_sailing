@@ -66,6 +66,18 @@ class {agent_class_name}(BaseAgent):
     for state, values in agent.q_table.items():
         q_values_str = np.array2string(values, precision=4, separator=', ')
         file_content += f"        self.q_table[{state}] = np.array({q_values_str})\n"
+
+    # Add polar
+
+    file_content += f'''
+
+    def _init_polar_table(self):
+        """Initialize the polar values with learned values."""
+'''
+    for polar, speed in agent.polar_average.items():
+        polar_values_str = np.array2string(speed, precision=4, separator=', ')
+        file_content += f"        self.polar_average[{polar}] = np.array({speed})\n"
+ 
     
     # Add remaining methods
     file_content += '''
