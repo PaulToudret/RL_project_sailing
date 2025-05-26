@@ -23,6 +23,7 @@ class Capitaine_2(BaseAgent):
         self.position_bins = 32
         self.velocity_bins = 8
         self.wind_bins = 8
+        self.wind_factor = 4
         
         # Q-table with learned values
         self.q_table = {}
@@ -12288,31 +12289,41 @@ class Capitaine_2(BaseAgent):
         self.q_table[(14, 30, 1, 10, 1, 1, 1, 1, 1)] = np.array([0., 0., 0., 0., 0., 0., 0., 0., 0.])
 
     def discretize_state(self, observation):
-        """Convert continuous observation to discrete state for Q-table lookup."""
-        # Extract position, velocity and wind from observation
         x, y = observation[0], observation[1]
         vx, vy = observation[2], observation[3]
         wx, wy = observation[4], observation[5]
-        
-        # Discretize position (assume 32x32 grid)
+
         grid_size = 32
         x_bin = min(int(x / grid_size * self.position_bins), self.position_bins - 1)
         y_bin = min(int(y / grid_size * self.position_bins), self.position_bins - 1)
-        
-        # Discretize velocity direction
+
         v_magnitude = np.sqrt(vx**2 + vy**2)
-        if v_magnitude < 0.1:  # If velocity is very small, consider it as a separate bin
+        if v_magnitude < 0.1:
             v_bin = 0
         else:
-            v_direction = np.arctan2(vy, vx)  # Range: [-pi, pi]
-            v_bin = int(((v_direction + np.pi) / (2 * np.pi) * (self.velocity_bins-1)) + 1) % self.velocity_bins
+            v_direction = np.arctan2(vy, vx)
+            v_bin = int(((-v_direction + 1/2*np.pi) / (2 * np.pi) * (self.velocity_bins - 1)) + 1) % self.velocity_bins
+
+        wind_direction = np.arctan2(wy, wx)
+        wind_bin = int(((-wind_direction + 1/2*np.pi) / (2 * np.pi) * self.wind_bins)) % self.wind_bins
+        wind_mag = int(self.wind_factor*np.sqrt(wx**2 + wy**2))
+
+        ### Adding more info to state
+
+        wind_ahead = []
+
+        locations, positions = get_ahead(x_bin=x_bin, y_bin=y_bin, factor=wind_mag)
+        for loc in locations:
+            i, j = loc
+            wxx, wyy = observation[i], observation[j]
+            wind_d = np.arctan2(wyy, wxx)
+            wind_b = int(((-wind_direction + 1/2*np.pi) / (2 * np.pi) * self.wind_bins)) % self.wind_bins
+            wind_ahead.append(wind_b)
         
-        # Discretize wind direction
-        wind_direction = np.arctan2(wy, wx)  # Range: [-pi, pi]
-        wind_bin = int(((wind_direction + np.pi) / (2 * np.pi) * self.wind_bins)) % self.wind_bins
-        
-        # Return discrete state tuple
-        return (x_bin, y_bin, v_bin, wind_bin)
+        wind_tup = tuple(wind_ahead)
+
+        return ((x_bin, y_bin, wind_bin, wind_mag) + wind_tup)
+
         
     def act(self, observation):
         """Choose the best action according to the learned Q-table."""
@@ -12333,3 +12344,89 @@ class Capitaine_2(BaseAgent):
     def seed(self, seed=None):
         """Set the random seed."""
         self.np_random = np.random.default_rng(seed)
+
+def actions_to_dir(i:int):
+    if i < 0 or i >= 8:
+        u = (0,0)
+        return u
+    if i == 0:
+        u = (0,1)
+    if i == 1:
+        u = (1,1)
+    if i == 2:
+        u = (1,0)
+    if i == 3:
+        u = (1,-1)
+    if i == 4:
+        u = (0,-1)
+    if i == 5:
+        u = (-1,-1)
+    if i == 6:
+        u = (-1,0)
+    if i == 7:
+        u = (-1,1)
+
+    ux, uy = u
+    n_u = np.sqrt(ux**2 + uy**2)
+    return u / n_u    
+
+def dir_to_goal(x,y,x_g=16.,y_g=31.):
+    ux = x_g - x
+    uy = y_g - y
+    n_u = np.sqrt(ux**2 + uy**2)
+    if n_u > 0:
+        ux = ux / n_u
+        uy = uy / n_u
+        return (ux, uy)
+    else:
+        return (0,0)
+
+def rosace_des_vents(x,y,x_g=16.,y_g=31.):
+    directions = np.zeros(9)
+    dir_g = dir_to_goal(x,y,x_g=x_g ,y_g=y_g)
+
+    for action in range(0,9):
+        u = actions_to_dir(action)
+        dot = np.dot(u, dir_g)
+        directions[action] = dot
+    return directions
+
+def get_ahead(x_bin, y_bin, factor):
+    factor = max(factor, 1)
+    left = (x_bin, y_bin) + factor * actions_to_dir(6)
+    up = (x_bin, y_bin) + factor * actions_to_dir(0)
+    right = (x_bin, y_bin) + factor * actions_to_dir(2)
+    upleft = (x_bin, y_bin) + factor * actions_to_dir(7)
+    upright = (x_bin, y_bin) + factor * actions_to_dir(1) 
+
+    locations = []
+    positions = []
+
+    for direction in [left, up, right, upleft, upright]:
+        x, y = direction
+        x = min(max(0, x),31)
+        y = min(max(0,y), 31)
+        x, y = int(round(x)), int(round(y))
+        positions.append((x,y))
+
+        i = 6 + (32 * 2 * y) + (2 * x)
+        j = 6 + (32 * 2 * y) + (2 * x) + 1
+        locations.append((i,j))
+    return locations, positions 
+
+def get_diff_angle(goal: tuple, wind: tuple):
+    x, y = goal
+    wx, wy = wind
+
+    goal_angle = np.arctan2(y, x)
+    wind_angle = np.arctan2(wy, wx)
+
+    relative_wind_direction = goal_angle - wind_angle
+    relative_wind_direction = (relative_wind_direction + np.pi) % (2 * np.pi) - np.pi
+    return ((180/np.pi)*relative_wind_direction+180)
+
+def opposite_actions(i: int):
+    if i == 8:
+        return 8
+    else:
+        return (i + 4) % 8
